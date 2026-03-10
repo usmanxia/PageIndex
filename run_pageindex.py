@@ -11,6 +11,10 @@ if __name__ == "__main__":
     parser.add_argument('--md_path', type=str, help='Path to the Markdown file')
 
     parser.add_argument('--model', type=str, default='gpt-4o-2024-11-20', help='Model to use')
+    parser.add_argument('--provider', type=str, default='openai', choices=['openai', 'ollama', 'huggingface', 'vllm'],
+                      help='LLM provider to use (default: openai)')
+    parser.add_argument('--base-url', type=str, default=None,
+                      help='Optional OpenAI-compatible API base URL override')
 
     parser.add_argument('--toc-check-pages', type=int, default=20, 
                       help='Number of pages to check for table of contents (PDF only)')
@@ -43,6 +47,11 @@ if __name__ == "__main__":
     if args.pdf_path and args.md_path:
         raise ValueError("Only one of --pdf_path or --md_path can be specified")
     
+    # Configure provider via env so existing internal calls keep working
+    os.environ['MODEL_PROVIDER'] = args.provider.lower()
+    if args.base_url:
+        os.environ['MODEL_API_BASE_URL'] = args.base_url
+
     if args.pdf_path:
         # Validate PDF file
         if not args.pdf_path.lower().endswith('.pdf'):

@@ -18,17 +18,83 @@ from pathlib import Path
 from types import SimpleNamespace as config
 
 CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "openai").lower()
+MODEL_API_BASE_URL = os.getenv("MODEL_API_BASE_URL")
+
+DEFAULT_PROVIDER_CONFIG = {
+    "openai": {
+        "api_key_env": "CHATGPT_API_KEY",
+        "default_base_url": None,
+    },
+    "ollama": {
+        "api_key_env": "OLLAMA_API_KEY",
+        "default_base_url": "http://localhost:11434/v1",
+    },
+    "huggingface": {
+        "api_key_env": "HUGGINGFACE_API_KEY",
+        "default_base_url": "https://router.huggingface.co/v1",
+    },
+    "vllm": {
+        "api_key_env": "VLLM_API_KEY",
+        "default_base_url": "http://localhost:8000/v1",
+    },
+}
+
+
+def resolve_llm_settings(provider=None, api_key=None, base_url=None):
+    provider = (provider or MODEL_PROVIDER or "openai").lower()
+    if provider not in DEFAULT_PROVIDER_CONFIG:
+        raise ValueError(
+            f"Unsupported provider '{provider}'. Supported providers: {list(DEFAULT_PROVIDER_CONFIG)}"
+        )
+
+    provider_config = DEFAULT_PROVIDER_CONFIG[provider]
+    resolved_base_url = base_url or MODEL_API_BASE_URL or provider_config["default_base_url"]
+    resolved_api_key = api_key or os.getenv(provider_config["api_key_env"]) or CHATGPT_API_KEY
+
+    if provider != "openai" and not resolved_api_key:
+        # Some OpenAI-compatible local runtimes accept any non-empty string.
+        resolved_api_key = "dummy"
+
+    return provider, resolved_api_key, resolved_base_url
+
+
+def _create_openai_client(provider=None, api_key=None, base_url=None):
+    _, resolved_api_key, resolved_base_url = resolve_llm_settings(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    kwargs = {"api_key": resolved_api_key}
+    if resolved_base_url:
+        kwargs["base_url"] = resolved_base_url
+    return openai.OpenAI(**kwargs)
+
+
+def _create_async_openai_client(provider=None, api_key=None, base_url=None):
+    _, resolved_api_key, resolved_base_url = resolve_llm_settings(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    kwargs = {"api_key": resolved_api_key}
+    if resolved_base_url:
+        kwargs["base_url"] = resolved_base_url
+    return openai.AsyncOpenAI(**kwargs)
 
 def count_tokens(text, model=None):
     if not text:
         return 0
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     return len(tokens)
 
-def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None, provider=None, base_url=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    client = _create_openai_client(provider=provider, api_key=api_key, base_url=base_url)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -58,9 +124,9 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
 
 
 
-def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None, provider=None, base_url=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    client = _create_openai_client(provider=provider, api_key=api_key, base_url=base_url)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -86,12 +152,12 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
                 return "Error"
             
 
-async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
+async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY, provider=None, base_url=None):
     max_retries = 10
     messages = [{"role": "user", "content": prompt}]
     for i in range(max_retries):
         try:
-            async with openai.AsyncOpenAI(api_key=api_key) as client:
+            async with _create_async_openai_client(provider=provider, api_key=api_key, base_url=base_url) as client:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -411,7 +477,10 @@ def add_preface_if_needed(data):
 
 
 def get_page_tokens(pdf_path, model="gpt-4o-2024-11-20", pdf_parser="PyPDF2"):
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        enc = tiktoken.get_encoding("cl100k_base")
     if pdf_parser == "PyPDF2":
         pdf_reader = PyPDF2.PdfReader(pdf_path)
         page_list = []
